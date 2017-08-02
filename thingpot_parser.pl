@@ -19,19 +19,22 @@ use Log::Log4perl qw(:easy);
 
 ##############################################################################
 # Configuration variables
-my $logfile  = "./parse.log";
-my $statfile = "./parse-stats.txt";
+my $logfile     = "./parse.log";
+my $stats_api   = "./stats-api.txt";
+my $stats_proxy = "./stats-proxy.txt";
+
 
 ##############################################################################
 # Modules configuration and Initialization of Logger
-Log::Log4perl->easy_init( { level    => $DEBUG,
+Log::Log4perl->easy_init( { level    => $INFO,
                             file     => ">>$logfile",
                             layout   => '%d %F{1}-%L-%M: [%p] %m%n' },
-                          { level    => $DEBUG,
+                          { level    => $INFO,
                             file     => "STDOUT",
-                            layout   => '%d %F{1}-%L-%M: [%p] %m%n' },
+                            layout   => '%d [%p] %m%n' },
                         );
 my $logger = Log::Log4perl->get_logger();
+
 
 ##############################################################################
 ## Description: Reads JSON events, store the into hashes and generate stats 
@@ -39,11 +42,6 @@ my $logger = Log::Log4perl->get_logger();
 sub getJsonEvents
 {
     my $file = shift;
-
-    unless (defined $file) {
-        $logger->fatal("Undefined input JSON file");
-        exit(-1);
-    }
     $logger->info("Reading content of EVE Json file ($file)");
     if ( open(FH_JSONFILE,$file) )
     {
@@ -74,11 +72,11 @@ sub getJsonEvents
 ##############################################################################
 ## Description: Process JSON data from HASH
 ##############################################################################
-sub processData {
+sub processDataApi {
     my ($data, $topfields) = @_;
     my %counter;
     foreach my $evt (keys %{$data}) {
-        $logger->info("Parsing ($evt)");
+        $logger->debug("Parsing ($evt)");
         foreach my $field1 (keys % {$data->{$evt}}) {
             if ( $field1 eq "url") {
                 $counter{"URLs"}{$data->{$evt}{$field1}} ++;
@@ -105,13 +103,13 @@ sub processData {
     return \%counter;
 }
 
-
 ##############################################################################
 ## Description: Show summary of event counts
 ##############################################################################
 sub storeSummary {
-    my ($counter, $statfile) = @_;
-    if (open (OUTFILE, ">$statfile")) {
+    my ($counter, $outfile) = @_;
+    if (open (OUTFILE, ">$outfile")) {
+        $logger->info("Creating output file ($outfile)");
         print OUTFILE "####################################\n";
         print OUTFILE "#########  S U M M A R Y  ##########\n";
         print OUTFILE "####################################\n\n";
@@ -119,21 +117,109 @@ sub storeSummary {
             print OUTFILE "\n>> $class \n";
             foreach my $val (sort{$counter->{$class}{$b}<=>$counter->{$class}{$a}} 
                     keys %{$counter->{$class}} ) {
-                print OUTFILE "\t $counter->{$class}{$val} : $val\n";
+                printf OUTFILE ("\t%10s : %s\n",$counter->{$class}{$val}, $val);
             }        
         }
         close(OUTFILE);
     }
     else {
-        $logger->warn("Unable to write STAT log file ($statfile)");
+        $logger->warn("Unable to write STAT log file ($outfile)");
     }
 }
 
 
+
+##############################################################################
+## Description: Show summary of event counts (JSON)
+##############################################################################
+sub processApiLog {
+    my $file_json    = shift;
+    my $hash_data    = getJsonEvents($file_json);
+    my $hash_counter = processDataApi($hash_data);
+    storeSummary($hash_counter, $stats_api);
+}
+
+
+##############################################################################
+## Description: Show summary of event counts (JSON)
+##############################################################################
+sub processProxyLog {
+    my $file_proxy   = shift;
+    my $hash_counter = processDataProxy($file_proxy);
+    storeSummary($hash_counter, $stats_proxy);
+}
+
+##############################################################################
+## Description: Process PROXY LOG
+##############################################################################
+sub processDataProxy {
+    my $logfile = shift;
+    my %counters ;
+    my $cnt     = 0;
+    if (open (PROXYLOG, "<$logfile")) {
+        $logger->info("Reading content of PROXY file ($logfile)");
+        while (<PROXYLOG>) {
+            $cnt++;
+            my $line = $_;
+               $line =~ m/([^ ]*) ([^ ]+) ([^ ]+) (\[[^\]]+\]) (\"[^\"]*\") ([0-9]*) ([0-9]*) (\"[^\"]*\") (\"[^\"]*\")/;
+            my $ip          = $1;
+            my $request     = $5;
+            my $status_code = $6;
+            my $user_agent  = $9;
+            $logger->debug("------>");
+            $logger->debug("\tIP          : $ip");
+            $logger->debug("\tREQUEST     : $request");
+            $logger->debug("\tSTATUS CODE : $status_code");
+            $logger->debug("\tUSER_AGENT  : $user_agent");
+            if ($request =~ m/^\"(POST) ([^ ]*)/ ||
+                $request =~ m/^\"(GET) ([^ ]*)/  || 
+                $request =~ m/^\"(HEAD) ([^ ]*)/ ||
+                $request =~ m/^\"(PUT) ([^ ]*)/   ) {
+                $counters{HTTP_REQUEST}{$1}++;
+                $counters{HTTP_URL}{$2}++;
+                $counters{HTTP_SOURCE_IP}{$ip}++;
+                $counters{HTTP_STATUS}{$status_code}++;
+            }
+            else {
+                $counters{NOHTTP_SOURCE_IP}{$ip}++;
+                $counters{NOHTTP_REQUEST}{$request}++;
+                $counters{NOHTTP_USER_AGENT}{$user_agent}++;
+                $counters{NOHTTP_STATUS}{$status_code}++;
+            }
+            $counters{ALL_SOURCE_IP}{$ip}++;
+            $counters{ALL_REQUEST}{$request}++;
+            $counters{ALL_USER_AGENT}{$user_agent}++;
+            $counters{ALL_STATUS}{$status_code}++;
+        }
+        $logger->info("|-- ($cnt) events processed from PROXY file ($logfile)");
+        return \%counters;
+    }
+    else {
+        $logger->fatal("Unable to read PROXY LOG file ($logfile)");
+        exit(-1);
+    }
+}
+
 ##############################################################################
 ## Main block
 ##############################################################################
-my $file_json    = $ARGV[0];
-my $hash_data    = getJsonEvents($file_json);
-my $hash_counter = processData($hash_data);
-storeSummary($hash_counter, $statfile);
+
+if ($ARGV[0] eq "api") {
+    unless (defined $ARGV[1]) {
+        $logger->fatal("Undefined input JSON file ");
+        exit(-1);
+    }
+    processApiLog($ARGV[1]);
+}
+elsif ($ARGV[0] eq "proxy") {
+    unless (defined $ARGV[1]) {
+        $logger->fatal("Undefined input PROXY file ");
+        exit(-1);
+    }
+    processProxyLog($ARGV[1]);
+}
+else {
+    $logger->error("Invalid logfile option: ($ARGV[0])");
+    $logger->error("Syntax:");
+    $logger->error("\t./thingpot_parser.pl proxy|api proxylogFILE|apiJsonFILE");
+}
