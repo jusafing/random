@@ -79,7 +79,25 @@ sub processDataApi {
         $logger->debug("Parsing ($evt)");
         foreach my $field1 (keys % {$data->{$evt}}) {
             if ( $field1 eq "url") {
-                $counter{"URLs"}{$data->{$evt}{$field1}} ++;
+                if ( checkApiUrl($data->{$evt}{$field1}) == 1 ) {                
+                    $counter{"URLs_API"}{"TOTAL_URLS_API"}++;
+                    $counter{"URLs_API"}{$data->{$evt}{$field1}} ++;
+                    if ( $data->{$evt}{$field1} =~ m/^(\/api)\/([^\/]+)\/([^\/]+)/ ) {
+                        my $f1 = $1;
+                        my $f2 = $2;
+                        my $f3 = $3;
+                        if ($f2 =~ m/hue/ || $f2 =~ m/devices/ || $f2 =~ m/index/  ) {
+                            $counter{"URLs_API_Targeted"}{"$f1/$f2"}++;
+                        }
+                        else {
+                            $counter{"URLs_API_Targeted"}{"$f1/$f2/$f3"}++;
+                        }
+                    }                    
+                }
+                else {
+                    $counter{"URLs_Others"}{"TOTAL_URLS_OTHERS"}++;
+                    $counter{"URLs_Others"}{$data->{$evt}{$field1}} ++;
+                }
             }
             elsif ( $field1 eq "type") {
                 $counter{"HTTP_TYPES"}{$data->{$evt}{$field1}} ++;
@@ -108,25 +126,39 @@ sub processDataApi {
 ##############################################################################
 sub storeSummary {
     my ($counter, $outfile) = @_;
-    if (open (OUTFILE, ">$outfile")) {
-        $logger->info("Creating output file ($outfile)");
-        print OUTFILE "####################################\n";
-        print OUTFILE "#########  S U M M A R Y  ##########\n";
-        print OUTFILE "####################################\n\n";
-        foreach my $class (keys %{$counter}) {
-            print OUTFILE "\n>> $class \n";
+    $logger->info("Creating output file ($outfile)");
+    foreach my $class (keys %{$counter}) {
+        if (open (OUTFILE, ">$outfile.$class")) {
+            print OUTFILE "####################################\n";
+            print OUTFILE "#########  S U M M A R Y  ##########\n";
+            print OUTFILE "####################################\n\n";
             foreach my $val (sort{$counter->{$class}{$b}<=>$counter->{$class}{$a}} 
                     keys %{$counter->{$class}} ) {
-                printf OUTFILE ("\t%10s : %s\n",$counter->{$class}{$val}, $val);
+                printf OUTFILE ("%s & %s \\\\ \n",$counter->{$class}{$val}, $val);
             }        
         }
-        close(OUTFILE);
+        else {
+            $logger->warn("Unable to write STAT log file ($outfile.$class)");
+        }
     }
-    else {
-        $logger->warn("Unable to write STAT log file ($outfile)");
-    }
+    close(OUTFILE);
 }
 
+
+##############################################################################
+## Description: checks whether the URL is part of the API
+##############################################################################
+sub checkApiUrl {
+    my $url = shift;
+    if ( $url =~ m/hue[\s\S]{0,40}$/  || $url =~ m/Philips[\s\S]{0,40}$/ ||
+         $url =~ m/^api\//            || $url =~ m/^\/api\//             || 
+         $url =~ m/^\/api$/ ) { 
+        return 1;
+    }
+    else {
+        return 0;
+    }    
+}
 
 
 ##############################################################################
@@ -179,6 +211,17 @@ sub processDataProxy {
                 $counters{HTTP_URL}{$2}++;
                 $counters{HTTP_SOURCE_IP}{$ip}++;
                 $counters{HTTP_STATUS}{$status_code}++;
+                $counters{HTTP_USER_AGENT}{$user_agent}++;
+                if ( checkApiUrl($2) == 1 ) {                
+                    $counters{"HTTP_URLs_API"}{"TOTAL_URLS_API"}++;
+                    $counters{"HTTP_URLs_API"}{$2}++;
+                    $counters{"HTTP_URLs_API_USER_AGENT"}{$user_agent}++;
+                }
+                else {
+                    $counters{"HTTP_URLs_Others"}{"TOTAL_URLS_OTHERS"}++;
+                    $counters{"HTTP_URLs_Others"}{$2}++;
+                    $counters{"HTTP_URLs_Others_USER_AGENT"}{$user_agent}++;
+                }
             }
             else {
                 $counters{NOHTTP_SOURCE_IP}{$ip}++;
